@@ -1,7 +1,55 @@
 import streamlit as st
 import pdfplumber
 import re
+import sqlite3
 import pandas as pd
+
+DB_FILE = "data.db"
+
+
+def setup_database():
+    # Create the table and add sample purchase orders (only if empty)
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS purchase_orders (
+        po_number TEXT PRIMARY KEY,
+        vendor TEXT,
+        amount REAL
+    )
+    """)
+    cursor.execute("SELECT COUNT(*) FROM purchase_orders")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO purchase_orders VALUES (?, ?, ?)", ("PO-889", "Taj Trading Co", 85000))
+        cursor.execute("INSERT INTO purchase_orders VALUES (?, ?, ?)", ("PO-890", "Karachi Steel Mart", 120000))
+        cursor.execute("INSERT INTO purchase_orders VALUES (?, ?, ?)", ("PO-891", "Quick Supplies", 45000))
+    connection.commit()
+    connection.close()
+
+
+def find_purchase_order(po_number):
+    # Look up one PO in the database. Returns None if not found.
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute("SELECT po_number, vendor, amount FROM purchase_orders WHERE po_number = ?", (po_number,))
+    row = cursor.fetchone()
+    connection.close()
+    return row
+
+
+def check_invoice(po_number, invoice_total):
+    # Compare the invoice with the purchase order and return (status, message)
+    if po_number is None or invoice_total is None:
+        return "Needs review", "Could not read the PO number or the total from this invoice."
+
+    po = find_purchase_order(po_number)
+    if po is None:
+        return "PO not found", f"{po_number} does not exist in the database."
+
+    po_amount = po[2]
+    if invoice_total == po_amount:
+        return "Matched", f"Invoice total {invoice_total:,.0f} matches {po_number}."
+    return "Mismatch", f"Invoice total is {invoice_total:,.0f} but {po_number} says {po_amount:,.0f}."
 
 
 def read_pdf(file):
@@ -103,6 +151,8 @@ def find_line_items(text):
     return items
 
 
+setup_database()
+
 st.title("Invoice Checker")
 
 file = st.file_uploader("Upload an invoice PDF", type="pdf")
@@ -120,6 +170,17 @@ if file:
             "PO Number": find_po_number(text),
             "Total": find_total(text),
         }
+
+        # Check the invoice against the database
+        status, message = check_invoice(fields["PO Number"], fields["Total"])
+
+        st.subheader("Result")
+        if status == "Matched":
+            st.success(f"{status}: {message}")
+        elif status == "Mismatch":
+            st.error(f"{status}: {message}")
+        else:
+            st.warning(f"{status}: {message}")
 
         table = pd.DataFrame(list(fields.items()), columns=["Field", "Value"])
         table["Value"] = table["Value"].astype(str)
