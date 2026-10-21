@@ -8,7 +8,7 @@ DB_FILE = "data.db"
 
 
 def setup_database():
-    # Create the table and add sample purchase orders (only if empty)
+    # Create the tables and add sample purchase orders (only if empty)
     connection = sqlite3.connect(DB_FILE)
     cursor = connection.cursor()
     cursor.execute("""
@@ -18,6 +18,13 @@ def setup_database():
         amount REAL
     )
     """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS customers (
+        name TEXT PRIMARY KEY,
+        phone TEXT,
+        address TEXT
+    )
+    """)
     cursor.execute("SELECT COUNT(*) FROM purchase_orders")
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO purchase_orders VALUES (?, ?, ?)", ("PO-889", "Taj Trading Co", 85000))
@@ -25,7 +32,6 @@ def setup_database():
         cursor.execute("INSERT INTO purchase_orders VALUES (?, ?, ?)", ("PO-891", "Quick Supplies", 45000))
     connection.commit()
     connection.close()
-
 
 def find_purchase_order(po_number):
     # Look up one PO in the database. Returns None if not found.
@@ -57,6 +63,30 @@ def get_all_purchase_orders():
     rows = cursor.fetchall()
     connection.close()
     return rows
+
+def add_customer(name, phone, address):
+    # Save a customer (or update if the name already exists)
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO customers VALUES (?, ?, ?)",
+        (name, phone, address),
+    )
+    connection.commit()
+    connection.close()
+
+
+def get_customer_from_db(name):
+    # Look up a customer by name (capital/small letters do not matter)
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute(
+        "SELECT name, phone, address FROM customers WHERE lower(name) = lower(?)",
+        (name,),
+    )
+    row = cursor.fetchone()
+    connection.close()
+    return row
 
 
 def import_purchase_orders(uploaded_file):
@@ -271,6 +301,24 @@ if file:
             st.error(f"{status}: {message}")
         else:
             st.warning(f"{status}: {message}")
+
+        st.subheader("Customer")
+        customer_name = fields["Customer"]
+        if customer_name is None:
+            st.warning("Customer name not found in the invoice.")
+        else:
+            saved_customer = get_customer_from_db(customer_name)
+            if saved_customer:
+                st.success(f"Existing customer: {saved_customer[0]}")
+                st.write("Phone:", saved_customer[1])
+                st.write("Address:", saved_customer[2])
+            else:
+                st.info(f"New customer: {customer_name}")
+                phone = st.text_input("Phone", key="customer_phone")
+                address = st.text_input("Address", key="customer_address")
+                if st.button("Save customer"):
+                    add_customer(customer_name, phone, address)
+                    st.rerun()
 
         table = pd.DataFrame(list(fields.items()), columns=["Field", "Value"])
         table["Value"] = table["Value"].astype(str)
