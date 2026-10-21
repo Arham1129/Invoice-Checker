@@ -37,6 +37,60 @@ def find_purchase_order(po_number):
     return row
 
 
+def add_purchase_order(po_number, vendor, amount):
+    # Save a new PO (or update it if the PO number already exists)
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO purchase_orders VALUES (?, ?, ?)",
+        (po_number, vendor, amount),
+    )
+    connection.commit()
+    connection.close()
+
+
+def get_all_purchase_orders():
+    # Return every PO as a list of rows
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute("SELECT po_number, vendor, amount FROM purchase_orders")
+    rows = cursor.fetchall()
+    connection.close()
+    return rows
+
+
+def import_purchase_orders(uploaded_file):
+    # Read an Excel or CSV file and save every row as a purchase order.
+    # Returns (number of rows saved, error message or None).
+    try:
+        if uploaded_file.name.lower().endswith(".csv"):
+            data = pd.read_csv(uploaded_file)
+        else:
+            data = pd.read_excel(uploaded_file)
+    except Exception as e:
+        return 0, f"Could not read the file: {e}"
+
+    data.columns = [str(c).strip().lower() for c in data.columns]
+
+    required = ["po_number", "vendor", "amount"]
+    for column in required:
+        if column not in data.columns:
+            return 0, f"Missing column: {column}"
+
+    saved = 0
+    for _, row in data.iterrows():
+        po_number = str(row["po_number"]).strip()
+        vendor = str(row["vendor"]).strip()
+        try:
+            amount = float(str(row["amount"]).replace(",", ""))
+        except ValueError:
+            continue
+        if po_number and po_number.lower() != "nan":
+            add_purchase_order(po_number, vendor, amount)
+            saved += 1
+    return saved, None
+
+
 def check_invoice(po_number, invoice_total):
     # Compare the invoice with the purchase order and return (status, message)
     if po_number is None or invoice_total is None:
@@ -151,9 +205,45 @@ def find_line_items(text):
     return items
 
 
+def make_csv_report(fields, items, status, message):
+    # Build one CSV text with details, result and line items
+    details = pd.DataFrame(list(fields.items()), columns=["Field", "Value"])
+    details.loc[len(details)] = ["Result", status]
+    details.loc[len(details)] = ["Result details", message]
+    csv_text = details.to_csv(index=False)
+
+    if items:
+        csv_text += "\nLine items\n"
+        csv_text += pd.DataFrame(items).to_csv(index=False)
+    return csv_text
+
+
 setup_database()
 
 st.title("Invoice Checker")
+
+with st.expander("Manage purchase orders"):
+    new_po = st.text_input("PO number (e.g. PO-892)")
+    new_vendor = st.text_input("Vendor")
+    new_amount = st.number_input("Amount", min_value=0.0, step=1000.0)
+
+    if st.button("Add purchase order"):
+        if new_po.strip() and new_vendor.strip():
+            add_purchase_order(new_po.strip(), new_vendor.strip(), new_amount)
+            st.success(f"{new_po} saved.")
+        else:
+            st.warning("Please fill in the PO number and vendor.")
+
+    po_file = st.file_uploader("Or upload many POs (Excel or CSV)", type=["xlsx", "csv"], key="po_upload")
+    if po_file is not None and st.button("Import purchase orders"):
+        count, error = import_purchase_orders(po_file)
+        if error:
+            st.error(error)
+        else:
+            st.success(f"{count} purchase orders saved.")
+
+    st.write("Current purchase orders:")
+    st.table(pd.DataFrame(get_all_purchase_orders(), columns=["PO Number", "Vendor", "Amount"]))
 
 file = st.file_uploader("Upload an invoice PDF", type="pdf")
 
@@ -204,6 +294,14 @@ if file:
                 st.warning("Items do not add up to the invoice total. Please review.")
         else:
             st.info("No line items found.")
+
+        report = make_csv_report(fields, items, status, message)
+        st.download_button(
+            label="Download report (CSV)",
+            data=report,
+            file_name="invoice_report.csv",
+            mime="text/csv",
+        )
 
         with st.expander("Show raw text"):
             st.text(text)
