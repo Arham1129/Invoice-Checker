@@ -246,7 +246,7 @@ def find_line_items(text):
             })
     return items
 
-
+@st.cache_data(show_spinner=False)
 def extract_fields_with_ai(text):
     # Ask the AI to read the invoice text and return the fields.
     # Returns None if anything goes wrong, so we can fall back to regex.
@@ -289,7 +289,6 @@ Document text:
         "PO Number": data.get("po_number"),
         "Total": total,
     }
-
 
 def make_csv_report(fields, items, status, message):
     # Build one CSV text with details, result and line items
