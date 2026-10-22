@@ -35,6 +35,15 @@ def setup_database():
         address TEXT
     )
     """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS processed_invoices (
+        invoice_number TEXT,
+        company TEXT,
+        total REAL,
+        status TEXT,
+        PRIMARY KEY (invoice_number, company)
+    )
+    """)
     cursor.execute("SELECT COUNT(*) FROM purchase_orders")
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO purchase_orders VALUES (?, ?, ?)", ("PO-889", "Taj Trading Co", 85000))
@@ -76,6 +85,15 @@ def get_all_purchase_orders():
     return rows
 
 
+def delete_purchase_order(po_number):
+    # Remove one PO from the database
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute("DELETE FROM purchase_orders WHERE po_number = ?", (po_number,))
+    connection.commit()
+    connection.close()
+
+
 def add_customer(name, phone, address):
     # Save a customer (or update if the name already exists)
     connection = sqlite3.connect(DB_FILE)
@@ -99,6 +117,32 @@ def get_customer_from_db(name):
     row = cursor.fetchone()
     connection.close()
     return row
+
+
+def find_processed_invoice(invoice_number, company):
+    # Returns the saved row if this invoice was already processed, else None
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute(
+        "SELECT invoice_number, company, total, status FROM processed_invoices "
+        "WHERE lower(invoice_number) = lower(?) AND lower(company) = lower(?)",
+        (invoice_number, company),
+    )
+    row = cursor.fetchone()
+    connection.close()
+    return row
+
+
+def save_processed_invoice(invoice_number, company, total, status):
+    # Remember this invoice so we can catch duplicates later
+    connection = sqlite3.connect(DB_FILE)
+    cursor = connection.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO processed_invoices VALUES (?, ?, ?, ?)",
+        (invoice_number, company, total, status),
+    )
+    connection.commit()
+    connection.close()
 
 
 def import_purchase_orders(uploaded_file):
@@ -132,8 +176,20 @@ def import_purchase_orders(uploaded_file):
             saved += 1
     return saved, None
 
+def clean_name(name):
+    # Lowercase, remove punctuation and common words like pvt, ltd, co
+    name = re.sub(r"[^a-z0-9 ]", " ", name.lower())
+    ignore = {"pvt", "ltd", "limited", "private", "co", "company", "inc", "llc"}
+    return " ".join(word for word in name.split() if word not in ignore)
 
-def check_invoice(po_number, invoice_total):
+
+def same_vendor(name_a, name_b):
+    # True if one cleaned name contains the other
+    a = clean_name(name_a)
+    b = clean_name(name_b)
+    return bool(a) and bool(b) and (a in b or b in a)
+
+def check_invoice(po_number, invoice_total, invoice_vendor):
     # Compare the invoice with the purchase order and return (status, message)
     if po_number is None or invoice_total is None:
         return "Needs review", "Could not read the PO number or the total from this invoice."
@@ -142,9 +198,17 @@ def check_invoice(po_number, invoice_total):
     if po is None:
         return "PO not found", f"{po_number} does not exist in the database."
 
+    po_vendor = po[1]
     po_amount = po[2]
-    if invoice_total == po_amount:
-        return "Matched", f"Invoice total {invoice_total:,.0f} matches {po_number}."
+
+    if not invoice_vendor or not same_vendor(invoice_vendor, po_vendor):
+        return "Vendor mismatch", (
+            f"{po_number} belongs to {po_vendor}, but this invoice is from "
+            f"{invoice_vendor or 'an unknown company'}."
+        )
+
+    if abs(invoice_total - po_amount) <= 1:
+        return "Matched", f"Invoice total {invoice_total:,.0f} matches {po_number} ({po_vendor})."
     return "Mismatch", f"Invoice total is {invoice_total:,.0f} but {po_number} says {po_amount:,.0f}."
 
 
@@ -246,6 +310,7 @@ def find_line_items(text):
             })
     return items
 
+
 @st.cache_data(show_spinner=False)
 def extract_fields_with_ai(text):
     # Ask the AI to read the invoice text and return the fields.
@@ -290,6 +355,7 @@ Document text:
         "Total": total,
     }
 
+
 def make_csv_report(fields, items, status, message):
     # Build one CSV text with details, result and line items
     details = pd.DataFrame(list(fields.items()), columns=["Field", "Value"])
@@ -327,6 +393,19 @@ with st.expander("Manage purchase orders"):
         else:
             st.success(f"{count} purchase orders saved.")
 
+    all_pos = get_all_purchase_orders()
+    po_numbers = [row[0] for row in all_pos]
+
+    if po_numbers:
+        po_to_delete = st.selectbox("Select a PO to delete", po_numbers, key="po_delete")
+        confirm = st.checkbox(f"Yes, delete {po_to_delete}", key="po_delete_confirm")
+        if st.button("Delete purchase order"):
+            if confirm:
+                delete_purchase_order(po_to_delete)
+                st.rerun()
+            else:
+                st.warning("Tick the confirmation box first.")
+
     st.write("Current purchase orders:")
     st.table(pd.DataFrame(get_all_purchase_orders(), columns=["PO Number", "Vendor", "Amount"]))
 
@@ -356,12 +435,26 @@ if file:
         st.caption(f"Extracted by: {source}")
 
         # Check the invoice against the database
-        status, message = check_invoice(fields["PO Number"], fields["Total"])
+        status, message = check_invoice(fields["PO Number"], fields["Total"], fields["Company Name"])
+
+        # Check if this invoice was already processed
+        invoice_no = fields["Invoice Number"]
+        company = fields["Company Name"]
+        duplicate = None
+        if invoice_no and company:
+            duplicate = find_processed_invoice(invoice_no, company)
+
+        if duplicate:
+            st.error(f"Duplicate invoice: {invoice_no} from {company} was already processed (status: {duplicate[3]}).")
+        elif invoice_no and company:
+            if st.button("Save this invoice as processed"):
+                save_processed_invoice(invoice_no, company, fields["Total"], status)
+                st.rerun()
 
         st.subheader("Result")
         if status == "Matched":
             st.success(f"{status}: {message}")
-        elif status == "Mismatch":
+        elif status in ("Mismatch", "Vendor mismatch"):
             st.error(f"{status}: {message}")
         else:
             st.warning(f"{status}: {message}")
@@ -374,15 +467,14 @@ if file:
             saved_customer = get_customer_from_db(customer_name)
             if saved_customer:
                 st.success(f"Existing customer: {saved_customer[0]}")
-                st.write("Phone:", saved_customer[1])
-                st.write("Address:", saved_customer[2])
-            else:
-                st.info(f"New customer: {customer_name}")
-                phone = st.text_input("Phone", key="customer_phone")
-                address = st.text_input("Address", key="customer_address")
-                if st.button("Save customer"):
-                    add_customer(customer_name, phone, address)
-                    st.rerun()
+                st.write("Phone:", saved_customer[1] or "Not saved")
+                st.write("Address:", saved_customer[2] or "Not saved")
+                with st.expander("Edit customer info"):
+                    new_phone = st.text_input("Phone", value=saved_customer[1] or "", key="edit_phone")
+                    new_address = st.text_input("Address", value=saved_customer[2] or "", key="edit_address")
+                    if st.button("Update customer"):
+                        add_customer(saved_customer[0], new_phone, new_address)
+                        st.rerun()
 
         table = pd.DataFrame(list(fields.items()), columns=["Field", "Value"])
         table["Value"] = table["Value"].astype(str)
@@ -400,7 +492,7 @@ if file:
             st.write("Sum of items:", total_of_items)
 
             invoice_total = fields["Total"]
-            if invoice_total is not None and total_of_items == invoice_total:
+            if invoice_total is not None and abs(total_of_items - invoice_total) <= 1:
                 st.success("Items add up to the invoice total.")
             else:
                 st.warning("Items do not add up to the invoice total. Please review.")
