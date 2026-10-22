@@ -3,6 +3,16 @@ import pdfplumber
 import re
 import sqlite3
 import pandas as pd
+import json
+import os
+from dotenv import load_dotenv
+from google import genai
+
+load_dotenv()
+
+AI_MODEL = "gemini-3.8-flash"
+api_key = os.getenv("GEMINI_API_KEY")
+ai_client = genai.Client(api_key=api_key) if api_key else None
 
 DB_FILE = "data.db"
 
@@ -32,6 +42,7 @@ def setup_database():
         cursor.execute("INSERT INTO purchase_orders VALUES (?, ?, ?)", ("PO-891", "Quick Supplies", 45000))
     connection.commit()
     connection.close()
+
 
 def find_purchase_order(po_number):
     # Look up one PO in the database. Returns None if not found.
@@ -63,6 +74,7 @@ def get_all_purchase_orders():
     rows = cursor.fetchall()
     connection.close()
     return rows
+
 
 def add_customer(name, phone, address):
     # Save a customer (or update if the name already exists)
@@ -235,6 +247,50 @@ def find_line_items(text):
     return items
 
 
+def extract_fields_with_ai(text):
+    # Ask the AI to read the invoice text and return the fields.
+    # Returns None if anything goes wrong, so we can fall back to regex.
+    if ai_client is None:
+        return None
+
+    prompt = f"""
+Extract these fields from the document text below.
+Return ONLY a JSON object with exactly these keys:
+company_name, address, ntn, invoice_number, date, customer, po_number, total.
+Use null if a field is missing. total must be a number without commas.
+
+Document text:
+{text}
+"""
+
+    try:
+        response = ai_client.models.generate_content(
+            model=AI_MODEL,
+            contents=prompt,
+            config={"response_mime_type": "application/json"},
+        )
+        data = json.loads(response.text)
+    except Exception:
+        return None
+
+    total = data.get("total")
+    try:
+        total = float(str(total).replace(",", "")) if total is not None else None
+    except ValueError:
+        total = None
+
+    return {
+        "Company Name": data.get("company_name"),
+        "Address": data.get("address"),
+        "NTN": data.get("ntn"),
+        "Invoice Number": data.get("invoice_number"),
+        "Date": data.get("date"),
+        "Customer": data.get("customer"),
+        "PO Number": data.get("po_number"),
+        "Total": total,
+    }
+
+
 def make_csv_report(fields, items, status, message):
     # Build one CSV text with details, result and line items
     details = pd.DataFrame(list(fields.items()), columns=["Field", "Value"])
@@ -280,16 +336,25 @@ file = st.file_uploader("Upload an invoice PDF", type="pdf")
 if file:
     text = read_pdf(file)
     if text.strip():
-        fields = {
-            "Company Name": find_company_name(text),
-            "Address": find_address(text),
-            "NTN": find_ntn(text),
-            "Invoice Number": find_invoice_number(text),
-            "Date": find_date(text),
-            "Customer": find_customer(text),
-            "PO Number": find_po_number(text),
-            "Total": find_total(text),
-        }
+        # Try the AI first. If it fails, fall back to regex.
+        ai_fields = extract_fields_with_ai(text)
+        if ai_fields is not None:
+            fields = ai_fields
+            source = "AI"
+        else:
+            fields = {
+                "Company Name": find_company_name(text),
+                "Address": find_address(text),
+                "NTN": find_ntn(text),
+                "Invoice Number": find_invoice_number(text),
+                "Date": find_date(text),
+                "Customer": find_customer(text),
+                "PO Number": find_po_number(text),
+                "Total": find_total(text),
+            }
+            source = "regex"
+
+        st.caption(f"Extracted by: {source}")
 
         # Check the invoice against the database
         status, message = check_invoice(fields["PO Number"], fields["Total"])
