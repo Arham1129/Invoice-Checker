@@ -45,10 +45,7 @@ def setup_database():
     )
     """)
     cursor.execute("SELECT COUNT(*) FROM purchase_orders")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO purchase_orders VALUES (?, ?, ?)", ("PO-889", "Taj Trading Co", 85000))
-        cursor.execute("INSERT INTO purchase_orders VALUES (?, ?, ?)", ("PO-890", "Karachi Steel Mart", 120000))
-        cursor.execute("INSERT INTO purchase_orders VALUES (?, ?, ?)", ("PO-891", "Quick Supplies", 45000))
+   
     connection.commit()
     connection.close()
 
