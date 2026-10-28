@@ -1,145 +1,25 @@
-import streamlit as st
-import pdfplumber
-import re
-import sqlite3
 import pandas as pd
-import json
-import os
-from dotenv import load_dotenv
-from google import genai
+import streamlit as st
 
-load_dotenv()
+from checker import check_invoice
+from database import (
+    add_customer,
+    add_purchase_order,
+    delete_purchase_order,
+    find_processed_invoice,
+    get_all_purchase_orders,
+    get_customer_from_db,
+    save_processed_invoice,
+    setup_database,
+)
+from extractor import (
+    extract_fields_with_ai,
+    extract_fields_with_regex,
+    find_line_items,
+    read_pdf,
+)
 
-AI_MODEL = "gemini-3.8-flash"
-api_key = os.getenv("GEMINI_API_KEY")
-ai_client = genai.Client(api_key=api_key) if api_key else None
-
-DB_FILE = "data.db"
-
-
-def setup_database():
-    # Create the tables and add sample purchase orders (only if empty)
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS purchase_orders (
-        po_number TEXT PRIMARY KEY,
-        vendor TEXT,
-        amount REAL
-    )
-    """)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS customers (
-        name TEXT PRIMARY KEY,
-        phone TEXT,
-        address TEXT
-    )
-    """)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS processed_invoices (
-        invoice_number TEXT,
-        company TEXT,
-        total REAL,
-        status TEXT,
-        PRIMARY KEY (invoice_number, company)
-    )
-    """)
-    cursor.execute("SELECT COUNT(*) FROM purchase_orders")
-   
-    connection.commit()
-    connection.close()
-
-
-def find_purchase_order(po_number):
-    # Look up one PO in the database. Returns None if not found.
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    cursor.execute("SELECT po_number, vendor, amount FROM purchase_orders WHERE po_number = ?", (po_number,))
-    row = cursor.fetchone()
-    connection.close()
-    return row
-
-
-def add_purchase_order(po_number, vendor, amount):
-    # Save a new PO (or update it if the PO number already exists)
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO purchase_orders VALUES (?, ?, ?)",
-        (po_number, vendor, amount),
-    )
-    connection.commit()
-    connection.close()
-
-
-def get_all_purchase_orders():
-    # Return every PO as a list of rows
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    cursor.execute("SELECT po_number, vendor, amount FROM purchase_orders")
-    rows = cursor.fetchall()
-    connection.close()
-    return rows
-
-
-def delete_purchase_order(po_number):
-    # Remove one PO from the database
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    cursor.execute("DELETE FROM purchase_orders WHERE po_number = ?", (po_number,))
-    connection.commit()
-    connection.close()
-
-
-def add_customer(name, phone, address):
-    # Save a customer (or update if the name already exists)
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO customers VALUES (?, ?, ?)",
-        (name, phone, address),
-    )
-    connection.commit()
-    connection.close()
-
-
-def get_customer_from_db(name):
-    # Look up a customer by name (capital/small letters do not matter)
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    cursor.execute(
-        "SELECT name, phone, address FROM customers WHERE lower(name) = lower(?)",
-        (name,),
-    )
-    row = cursor.fetchone()
-    connection.close()
-    return row
-
-
-def find_processed_invoice(invoice_number, company):
-    # Returns the saved row if this invoice was already processed, else None
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    cursor.execute(
-        "SELECT invoice_number, company, total, status FROM processed_invoices "
-        "WHERE lower(invoice_number) = lower(?) AND lower(company) = lower(?)",
-        (invoice_number, company),
-    )
-    row = cursor.fetchone()
-    connection.close()
-    return row
-
-
-def save_processed_invoice(invoice_number, company, total, status):
-    # Remember this invoice so we can catch duplicates later
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO processed_invoices VALUES (?, ?, ?, ?)",
-        (invoice_number, company, total, status),
-    )
-    connection.commit()
-    connection.close()
+# TODO: add chatbot, login page, static memory
 
 
 def import_purchase_orders(uploaded_file):
@@ -173,184 +53,18 @@ def import_purchase_orders(uploaded_file):
             saved += 1
     return saved, None
 
-def clean_name(name):
-    # Lowercase, remove punctuation and common words like pvt, ltd, co
-    name = re.sub(r"[^a-z0-9 ]", " ", name.lower())
-    ignore = {"pvt", "ltd", "limited", "private", "co", "company", "inc", "llc"}
-    return " ".join(word for word in name.split() if word not in ignore)
 
-
-def same_vendor(name_a, name_b):
-    # True if one cleaned name contains the other
-    a = clean_name(name_a)
-    b = clean_name(name_b)
-    return bool(a) and bool(b) and (a in b or b in a)
-
-def check_invoice(po_number, invoice_total, invoice_vendor):
-    # Compare the invoice with the purchase order and return (status, message)
-    if po_number is None or invoice_total is None:
-        return "Needs review", "Could not read the PO number or the total from this invoice."
-
-    po = find_purchase_order(po_number)
-    if po is None:
-        return "PO not found", f"{po_number} does not exist in the database."
-
-    po_vendor = po[1]
-    po_amount = po[2]
-
-    if not invoice_vendor or not same_vendor(invoice_vendor, po_vendor):
-        return "Vendor mismatch", (
-            f"{po_number} belongs to {po_vendor}, but this invoice is from "
-            f"{invoice_vendor or 'an unknown company'}."
-        )
-
-    if abs(invoice_total - po_amount) <= 1:
-        return "Matched", f"Invoice total {invoice_total:,.0f} matches {po_number} ({po_vendor})."
-    return "Mismatch", f"Invoice total is {invoice_total:,.0f} but {po_number} says {po_amount:,.0f}."
-
-
-def read_pdf(file):
-    # Read every page of the PDF and join the text together
-    text = ""
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            text += (page.extract_text() or "") + "\n"
-    return text
-
-
-def get_lines(text):
-    # Split the text into a list of non-empty lines
-    lines = []
-    for line in text.split("\n"):
-        line = line.strip()
-        if line:
-            lines.append(line)
-    return lines
-
-
-def find_company_name(text):
-    # The company name is the first line of the invoice
-    lines = get_lines(text)
-    if len(lines) > 0:
-        return lines[0]
-    return None
-
-
-def find_address(text):
-    # The address is the second line of the invoice
-    lines = get_lines(text)
-    if len(lines) > 1:
-        return lines[1]
-    return None
-
-
-def find_ntn(text):
-    # Look for the text after "NTN:"
-    match = re.search(r"NTN:\s*(\S+)", text)
-    if match:
-        return match.group(1)
-    return None
-
-
-def find_invoice_number(text):
-    # Look for the text after "Invoice #:" or "Invoice No:"
-    match = re.search(r"Invoice\s*(?:#|No)\s*:\s*(\S+)", text)
-    if match:
-        return match.group(1)
-    return None
-
-
-def find_date(text):
-    # Look for dates like 12-Oct-2026 or 15 October 2026
-    match = re.search(r"Date:\s*(\d{1,2}[- ][A-Za-z]+[- ]\d{4})", text)
-    if match:
-        return match.group(1)
-    return None
-
-
-def find_customer(text):
-    # Everything after "Customer:" until the end of the line
-    match = re.search(r"Customer:\s*(.+)", text)
-    if match:
-        return match.group(1)
-    return None
-
-
-def find_po_number(text):
-    # Look for something like PO-889
-    match = re.search(r"PO-\d+", text)
-    if match:
-        return match.group()
-    return None
-
-
-def find_total(text):
-    # Look for "Total Payable: Rs 85,000" or "GRAND TOTAL: Rs 128,500"
-    match = re.search(r"\bTotal[A-Za-z ]*:\s*(?:Rs\.?)?\s*([\d,]+(?:\.\d+)?)", text, re.IGNORECASE)
-    if match:
-        return float(match.group(1).replace(",", ""))
-    return None
-
-
-def find_line_items(text):
-    # Find every line that looks like: 1 Cement bags (50kg) 100 650.00 65,000.00
-    items = []
-    for line in text.split("\n"):
-        match = re.match(r"^(\d+)\s+(.+?)\s+(\d+)\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})$", line.strip())
-        if match:
-            items.append({
-                "Sr": int(match.group(1)),
-                "Description": match.group(2),
-                "Qty": int(match.group(3)),
-                "Rate": float(match.group(4).replace(",", "")),
-                "Amount": float(match.group(5).replace(",", "")),
-            })
-    return items
-
-
-@st.cache_data(show_spinner=False)
-def extract_fields_with_ai(text):
-    # Ask the AI to read the invoice text and return the fields.
-    # Returns None if anything goes wrong, so we can fall back to regex.
-    if ai_client is None:
-        return None
-
-    prompt = f"""
-Extract these fields from the document text below.
-Return ONLY a JSON object with exactly these keys:
-company_name, address, ntn, invoice_number, date, customer, po_number, total.
-Use null if a field is missing. total must be a number without commas.
-
-Document text:
-{text}
-"""
-
-    try:
-        response = ai_client.models.generate_content(
-            model=AI_MODEL,
-            contents=prompt,
-            config={"response_mime_type": "application/json"},
-        )
-        data = json.loads(response.text)
-    except Exception:
-        return None
-
-    total = data.get("total")
-    try:
-        total = float(str(total).replace(",", "")) if total is not None else None
-    except ValueError:
-        total = None
-
-    return {
-        "Company Name": data.get("company_name"),
-        "Address": data.get("address"),
-        "NTN": data.get("ntn"),
-        "Invoice Number": data.get("invoice_number"),
-        "Date": data.get("date"),
-        "Customer": data.get("customer"),
-        "PO Number": data.get("po_number"),
-        "Total": total,
-    }
+def get_fields_with_ai(text):
+    # Remember only successful AI results (failures are retried next time)
+    if "ai_cache" not in st.session_state:
+        st.session_state["ai_cache"] = {}
+    cache = st.session_state["ai_cache"]
+    if text not in cache:
+        result = extract_fields_with_ai(text)
+        if result is None:
+            return None
+        cache[text] = result
+    return cache[text]
 
 
 def make_csv_report(fields, items, status, message):
@@ -412,21 +126,12 @@ if file:
     text = read_pdf(file)
     if text.strip():
         # Try the AI first. If it fails, fall back to regex.
-        ai_fields = extract_fields_with_ai(text)
+        ai_fields = get_fields_with_ai(text)
         if ai_fields is not None:
             fields = ai_fields
             source = "AI"
         else:
-            fields = {
-                "Company Name": find_company_name(text),
-                "Address": find_address(text),
-                "NTN": find_ntn(text),
-                "Invoice Number": find_invoice_number(text),
-                "Date": find_date(text),
-                "Customer": find_customer(text),
-                "PO Number": find_po_number(text),
-                "Total": find_total(text),
-            }
+            fields = extract_fields_with_regex(text)
             source = "regex"
 
         st.caption(f"Extracted by: {source}")
@@ -472,6 +177,13 @@ if file:
                     if st.button("Update customer"):
                         add_customer(saved_customer[0], new_phone, new_address)
                         st.rerun()
+            else:
+                st.info(f"New customer: {customer_name}")
+                phone = st.text_input("Phone", key="customer_phone")
+                address = st.text_input("Address", key="customer_address")
+                if st.button("Save customer"):
+                    add_customer(customer_name, phone, address)
+                    st.rerun()
 
         table = pd.DataFrame(list(fields.items()), columns=["Field", "Value"])
         table["Value"] = table["Value"].astype(str)
