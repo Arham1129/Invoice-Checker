@@ -1,13 +1,10 @@
 import pandas as pd
 import streamlit as st
+import requests
 
-#chatbot
-#docker implementation
-#FASTapi implemenatation 
-#Login Page implementation
-# due tuesday 2nd nov 
+API_URL = "http://localhost:8000/check-invoice"
 
-#CURRENT:: Fast API implementation 
+
 
 
 from checker import check_invoice
@@ -130,23 +127,30 @@ with st.expander("Manage purchase orders"):
     st.table(pd.DataFrame(get_all_purchase_orders(), columns=["PO Number", "Vendor", "Amount"]))
 
 file = st.file_uploader("Upload an invoice PDF", type="pdf")
-
 if file:
     text = read_pdf(file)
     if text.strip():
-        # Try the AI first. If it fails, fall back to regex.
-        ai_fields = get_fields_with_ai(text)
-        if ai_fields is not None:
-            fields = ai_fields
-            source = "AI"
-        else:
-            fields = extract_fields_with_regex(text)
-            source = "regex"
+        try:
+            response = requests.post(
+                API_URL,
+                files={"file": (file.name, file.getvalue(), "application/pdf")},
+                timeout=60,
+            )
+            result = response.json()
+        except Exception as e:
+            st.error(f"Could not reach the API. Is uvicorn running? ({e})")
+            st.stop()
 
-        st.caption(f"Extracted by: {source}")
+        if "error" in result:
+            st.warning(result["error"])
+            st.stop()
 
-        # Check the invoice against the database
-        status, message = check_invoice(fields["PO Number"], fields["Total"], fields["Company Name"])
+        fields = result["fields"]
+        source = result["source"]
+        status = result["status"]
+        message = result["message"]
+
+        st.caption(f"Extracted by: {source} (via API)")
 
         # Check if this invoice was already processed
         invoice_no = fields["Invoice Number"]
