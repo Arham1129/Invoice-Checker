@@ -1,6 +1,15 @@
 import pandas as pd
 import streamlit as st
 
+#chatbot
+#docker implementation
+#FASTapi implemenatation 
+#Login Page implementation
+# due tuesday 2nd nov 
+
+#CURRENT:: Fast API implementation 
+
+
 from checker import check_invoice
 from database import (
     add_customer,
