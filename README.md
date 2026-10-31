@@ -40,6 +40,8 @@ Python, Streamlit, FastAPI, SQLite, Gemini API, pandas, pdfplumber, pytest
 | `database.py` | SQLite functions (POs, customers, processed invoices) |
 | `test_checker.py`, `test_extractor.py` | pytest tests |
 
+For a plain-language walkthrough, see [How it works](docs/HOW_IT_WORKS.md).
+
 ## Run it locally
 
 1. Create and activate a virtual environment:
