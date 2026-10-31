@@ -101,9 +101,6 @@ Python, Streamlit, FastAPI, SQLite, Gemini API, pandas, pdfplumber, pytest
 
 ## What I learned
 
-<<<<<<< HEAD
-
-=======
 - How a project is split into a frontend (Streamlit), a backend (FastAPI) and
   a database (SQLite), and how data moves between them: PDF upload, text
   extraction, AI-to-JSON, matching logic, and the result back to the screen.
@@ -114,6 +111,3 @@ Python, Streamlit, FastAPI, SQLite, Gemini API, pandas, pdfplumber, pytest
   Adding a vendor check and a pytest test fixed it.
 - Working with environments and tooling: virtual environments, Git/GitHub,
   and handling AI errors with retries and a regex fallback.
-
-[Write 2-3 lines in your own words here.]
->>>>>>> 0b8d98603814fe0c6f1e16ff1e08b216bac1e223
