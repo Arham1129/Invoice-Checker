@@ -101,4 +101,15 @@ Python, Streamlit, FastAPI, SQLite, Gemini API, pandas, pdfplumber, pytest
 
 ## What I learned
 
+- How a project is split into a frontend (Streamlit), a backend (FastAPI) and
+  a database (SQLite), and how data moves between them: PDF upload, text
+  extraction, AI-to-JSON, matching logic, and the result back to the screen.
+- Why the AI should only read and structure data, while a tested Python
+  function makes the actual decision.
+- Debugging real problems: I found a bug where an invoice from one company
+  matched another company's PO because I only compared PO number and amount.
+  Adding a vendor check and a pytest test fixed it.
+- Working with environments and tooling: virtual environments, Git/GitHub,
+  and handling AI errors with retries and a regex fallback.
+
 [Write 2-3 lines in your own words here.]
