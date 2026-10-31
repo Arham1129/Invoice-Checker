@@ -101,4 +101,4 @@ Python, Streamlit, FastAPI, SQLite, Gemini API, pandas, pdfplumber, pytest
 
 ## What I learned
 
-[Write 2-3 lines in your own words here.]
+
